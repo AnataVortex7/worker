@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,14 +37,6 @@ func handlePing(c *gin.Context) {
 }
 
 // /worker-stream/:workerToken
-//
-// Security:
-//   1. AES-256-GCM token decrypt (same STREAM_SECRET as main server)
-//   2. Token expiry check
-//   3. SessionToken == "" check (worker tokens मध्ये हे empty असतं)
-//
-// Session / nonce / access — main server च्या handleWatch ने आधीच validate केलं.
-// Worker फक्त pipe करतो: Telegram → Browser.
 func handleWorkerStream(c *gin.Context) {
 	w := c.Writer
 	r := c.Request
@@ -62,7 +55,7 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 2. Bot worker निवडा (Level 2 round-robin)
+	// 2. Bot worker निवडा (round-robin)
 	botWorker := botworker.Next()
 	if botWorker == nil {
 		http.Error(w, "no bot workers available", http.StatusServiceUnavailable)
@@ -76,35 +69,28 @@ func handleWorkerStream(c *gin.Context) {
 	file, err := tgutil.FileFromMessageInChannel(c, botWorker.Client, verified.MessageID, verified.ChannelID, log)
 	if err != nil {
 		log.Error("file fetch failed", zap.Error(err))
-		http.Error(w, "could not load file from Telegram", http.StatusInternalServerError)
+		http.Error(w, "could not load file from Telegram: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 4. Small file / photo
+	// 4. Photo (FileSize == 0) — chunk by chunk download
 	if file.FileSize == 0 {
-		res, err := botWorker.Client.API().UploadGetFile(c, &tg.UploadGetFileRequest{
-			Location: file.Location,
-			Offset:   0,
-			Limit:    1024 * 1024,
-		})
+		data, err := downloadPhoto(c, botWorker, file)
 		if err != nil {
-			http.Error(w, "failed to load file", http.StatusInternalServerError)
-			return
-		}
-		result, ok := res.(*tg.UploadFile)
-		if !ok {
-			http.Error(w, "unexpected file response", http.StatusInternalServerError)
+			log.Error("photo download failed", zap.Error(err))
+			http.Error(w, "failed to load photo: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		c.Header("Content-Disposition", fmt.Sprintf("inline; filename=\"%s\"", file.FileName))
+		c.Header("Content-Length", strconv.Itoa(len(data)))
 		setAntiDownloadHeaders(c)
 		if r.Method != "HEAD" {
-			c.Data(http.StatusOK, file.MimeType, result.GetBytes())
+			c.Data(http.StatusOK, file.MimeType, data)
 		}
 		return
 	}
 
-	// 5. Range-aware streaming
+	// 5. Range-aware streaming (video, PDF, documents)
 	c.Header("Accept-Ranges", "bytes")
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
@@ -154,6 +140,72 @@ func handleWorkerStream(c *gin.Context) {
 			log.Error("stream copy error", zap.Error(err))
 		}
 	}
+}
+
+// downloadPhoto downloads a photo by fetching chunks until done.
+// Handles both upload.file and upload.fileCdnRedirect responses.
+func downloadPhoto(c *gin.Context, botWorker *botworker.Worker, file *tgutil.File) ([]byte, error) {
+	const chunkSize = 512 * 1024 // 512 KB per chunk
+	var buf bytes.Buffer
+	var offset int64
+
+	for {
+		res, err := botWorker.Client.API().UploadGetFile(c, &tg.UploadGetFileRequest{
+			Location: file.Location,
+			Offset:   offset,
+			Limit:    chunkSize,
+			Precise:  true,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("UploadGetFile offset=%d: %w", offset, err)
+		}
+
+		switch r := res.(type) {
+		case *tg.UploadFile:
+			chunk := r.GetBytes()
+			if len(chunk) == 0 {
+				// No more data
+				return buf.Bytes(), nil
+			}
+			buf.Write(chunk)
+			offset += int64(len(chunk))
+			if len(chunk) < chunkSize {
+				// Last chunk
+				return buf.Bytes(), nil
+			}
+
+		case *tg.UploadFileCdnRedirect:
+			// CDN redirect — download directly from CDN URL
+			return downloadFromCDN(r)
+
+		default:
+			return nil, fmt.Errorf("unexpected UploadGetFile response type %T", res)
+		}
+	}
+}
+
+// downloadFromCDN fetches photo data from Telegram CDN.
+func downloadFromCDN(redirect *tg.UploadFileCdnRedirect) ([]byte, error) {
+	// CDN URL: https://<dc_id>.cdn.telegram.org/file/<file_token>
+	url := fmt.Sprintf("https://cdn%d.telegram.org/file/%s",
+		redirect.DCID,
+		string(redirect.FileToken),
+	)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("CDN fetch: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("CDN returned status %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("CDN read: %w", err)
+	}
+	return data, nil
 }
 
 func setAntiDownloadHeaders(c *gin.Context) {
