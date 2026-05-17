@@ -55,7 +55,16 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 2. Bot worker निवडा (round-robin)
+	// 2. Block direct browser navigation (address-bar paste / devtools open).
+	// A legitimate <video> element sets Sec-Fetch-Dest: video (or audio/empty for
+	// range sub-requests). Address-bar navigation always sets Sec-Fetch-Dest: document.
+	// This header is browser-enforced — JavaScript cannot spoof it.
+	if r.Header.Get("Sec-Fetch-Dest") == "document" {
+		http.Error(w, "Direct stream access is not allowed.", http.StatusForbidden)
+		return
+	}
+
+	// 3. Bot worker निवडा (round-robin)
 	botWorker := botworker.Next()
 	if botWorker == nil {
 		http.Error(w, "no bot workers available", http.StatusServiceUnavailable)
@@ -65,7 +74,7 @@ func handleWorkerStream(c *gin.Context) {
 	log.Sugar().Debugf("worker-stream: msg=%d chan=%d bot=@%s",
 		verified.MessageID, verified.ChannelID, botWorker.Self.Username)
 
-	// 3. File metadata from Telegram
+	// 4. File metadata from Telegram
 	file, err := tgutil.FileFromMessageInChannel(c, botWorker.Client, verified.MessageID, verified.ChannelID, log)
 	if err != nil {
 		log.Error("file fetch failed", zap.Error(err))
@@ -73,7 +82,7 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 4. Photo (FileSize == 0) — chunk by chunk download
+	// 5. Photo (FileSize == 0) — chunk by chunk download
 	if file.FileSize == 0 {
 		data, err := downloadPhoto(c, botWorker, file)
 		if err != nil {
@@ -90,7 +99,7 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 5. Range-aware streaming (video, PDF, documents)
+	// 6. Range-aware streaming (video, PDF, documents)
 	c.Header("Accept-Ranges", "bytes")
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
@@ -127,7 +136,7 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 6. Pipe: Telegram → Browser
+	// 7. Pipe: Telegram → Browser
 	pipe, err := stream.NewStreamPipe(c, botWorker.Client, file.Location, start, end, log)
 	if err != nil {
 		log.Error("stream pipe create failed", zap.Error(err))
