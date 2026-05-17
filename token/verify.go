@@ -20,33 +20,61 @@ var (
 	ErrWrongType    = errors.New("this token was not issued for a worker endpoint")
 )
 
-// ─── Payload — must match main server's StreamPayload exactly ────────────────
-//
-// Main server च्या token.New() ने हे encrypt करतो.
-// Worker फक्त decrypt + validate करतो.
+// ─── Payload ──────────────────────────────────────────────────────────────────
+// Main server च्या WorkerTokenPayload शी exactly match असणं आवश्यक.
+// Main server हे encrypt करतो, worker फक्त decrypt + use करतो.
 
-type streamPayload struct {
-	MessageID    int64     `json:"mid"`
-	ChannelID    int64     `json:"cid"`
-	UserID       string    `json:"uid"`
-	SessionToken string    `json:"sid"` // worker tokens मध्ये हे "" असतं
-	ExpiresAt    time.Time `json:"exp"`
+type WorkerTokenPayload struct {
+	// Identity
+	MessageID int64  `json:"mid"`
+	ChannelID int64  `json:"cid"`
+	UserID    string `json:"uid"`
+
+	// Bot credentials — main server च्या bot pool मधून येतात
+	// Worker स्वतः Telegram connect करतो याच credentials ने
+	ApiID    int32  `json:"api_id"`
+	ApiHash  string `json:"api_hash"`
+	BotToken string `json:"bot_token"`
+
+	// File location — main server ने आधीच Telegram ला query केलेली
+	// Worker ला Telegram ला परत विचारायची गरज नाही
+	FileType      string `json:"ftype"`  // "document" | "photo"
+	FileID        int64  `json:"fid"`
+	AccessHash    int64  `json:"fah"`
+	FileReference []byte `json:"fref"`
+	ThumbSize     string `json:"fthumb"` // फक्त photo साठी
+	FileSize      int64  `json:"fsz"`
+	FileName      string `json:"fname"`
+	MimeType      string `json:"fmime"`
+	DCID          int    `json:"dc"`
+
+	// Expiry
+	ExpiresAt time.Time `json:"exp"`
 }
 
-// VerifyResult — caller ला दिलेलं decrypted payload.
+// VerifyResult — handler ला दिलेलं decrypted, validated payload
 type VerifyResult struct {
-	MessageID int
+	MessageID int64
 	ChannelID int64
 	UserID    string
+
+	ApiID    int32
+	ApiHash  string
+	BotToken string
+
+	FileType      string
+	FileID        int64
+	AccessHash    int64
+	FileReference []byte
+	ThumbSize     string
+	FileSize      int64
+	FileName      string
+	MimeType      string
+	DCID          int
 }
 
-// Verify decrypts the worker token and validates:
-//  1. AES-256-GCM decryption (using STREAM_SECRET)
-//  2. Expiry check
-//  3. Worker token check: SessionToken must be "" (main server sets it empty for worker tokens)
-//
-// Session / nonce / access checks are NOT done here —
-// those were already handled by the main server's handleWatch.
+// Verify decrypts and validates a worker token.
+// Checks: AES-GCM decryption, expiry, worker-type marker (SessionToken must be "").
 func Verify(tokenStr string) (*VerifyResult, error) {
 	key := deriveKey()
 
@@ -76,7 +104,7 @@ func Verify(tokenStr string) (*VerifyResult, error) {
 		return nil, ErrTokenInvalid
 	}
 
-	var payload streamPayload
+	var payload WorkerTokenPayload
 	if err = json.Unmarshal(plaintext, &payload); err != nil {
 		return nil, ErrTokenInvalid
 	}
@@ -85,21 +113,31 @@ func Verify(tokenStr string) (*VerifyResult, error) {
 		return nil, ErrTokenExpired
 	}
 
-	// SessionToken != "" म्हणजे हे main stream token आहे (worker token नाही).
-	// Security: main stream token ला worker endpoint वर reject करा.
-	if payload.SessionToken != "" {
+	// BotToken empty म्हणजे हे worker token नाही
+	if payload.BotToken == "" {
 		return nil, ErrWrongType
 	}
 
 	return &VerifyResult{
-		MessageID: int(payload.MessageID),
-		ChannelID: payload.ChannelID,
-		UserID:    payload.UserID,
+		MessageID:     payload.MessageID,
+		ChannelID:     payload.ChannelID,
+		UserID:        payload.UserID,
+		ApiID:         payload.ApiID,
+		ApiHash:       payload.ApiHash,
+		BotToken:      payload.BotToken,
+		FileType:      payload.FileType,
+		FileID:        payload.FileID,
+		AccessHash:    payload.AccessHash,
+		FileReference: payload.FileReference,
+		ThumbSize:     payload.ThumbSize,
+		FileSize:      payload.FileSize,
+		FileName:      payload.FileName,
+		MimeType:      payload.MimeType,
+		DCID:          payload.DCID,
 	}, nil
 }
 
-// deriveKey SHA-256 hash of STREAM_SECRET → 32-byte AES-256 key.
-// Main server च्या token package सारखीच logic.
+// deriveKey — STREAM_SECRET → 32-byte AES-256 key (main server सारखंच)
 func deriveKey() []byte {
 	sum := sha256.Sum256([]byte(config.C.StreamSecret))
 	return sum[:]
