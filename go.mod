@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	github.com/celestix/gotgproto v1.0.0-beta21
-	github.com/coocood/freecache v1.2.4
 	github.com/gin-gonic/gin v1.9.1
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gotd/contrib v0.19.0

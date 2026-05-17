@@ -6,8 +6,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/apm1432/worker/botworker"
+	"github.com/apm1432/worker/botpool"
 	"github.com/apm1432/worker/config"
+	"github.com/apm1432/worker/registration"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -27,12 +28,19 @@ func main() {
 		zap.Bool("dev", config.C.Dev),
 	)
 
-	// 3. Telegram bot workers (Level 2 round-robin)
-	if err := botworker.Start(logger); err != nil {
-		logger.Fatal("[main] botworker.Start failed", zap.Error(err))
+	// 3. Bot pool init (session directory बनवतो)
+	if err := os.MkdirAll("sessions", os.ModePerm); err != nil {
+		logger.Fatal("sessions dir create failed", zap.Error(err))
 	}
+	botpool.Init(logger)
+	logger.Info("Bot pool ready (on-demand from token credentials)")
 
-	// 4. HTTP server
+	// 4. Register with main server + start heartbeat
+	// Goroutine मध्ये — HTTP server आधी start होतो म्हणजे
+	// main server च्या /ping ला response देता येतो
+	registration.Start(logger)
+
+	// 5. HTTP server
 	router := buildRouter(logger)
 	addr := fmt.Sprintf(":%d", config.C.Port)
 	logger.Info("Worker HTTP server ready", zap.String("addr", addr))
@@ -51,8 +59,6 @@ func buildRouter(logger *zap.Logger) *gin.Engine {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-
-	// Request logger (dev mode मध्ये verbose)
 	if config.C.Dev {
 		r.Use(gin.Logger())
 	}
@@ -60,8 +66,6 @@ func buildRouter(logger *zap.Logger) *gin.Engine {
 	setupRoutes(r, logger)
 	return r
 }
-
-// ─── Logger ───────────────────────────────────────────────────────────────────
 
 func initLogger(dev bool) *zap.Logger {
 	var lvl zapcore.Level
