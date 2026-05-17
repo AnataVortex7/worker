@@ -13,7 +13,6 @@ import (
 	"go.uber.org/zap"
 )
 
-// calculateBlockSize determines optimal block size based on the range requested.
 func calculateBlockSize(start, end int64) int64 {
 	size := end - start + 1
 	switch {
@@ -28,7 +27,7 @@ func calculateBlockSize(start, end int64) int64 {
 	}
 }
 
-// StreamPipe reads data from Telegram with concurrent prefetching.
+// StreamPipe reads from Telegram with concurrent prefetching.
 // Implements io.ReadCloser.
 type StreamPipe struct {
 	ctx    context.Context
@@ -186,14 +185,14 @@ func (p *StreamPipe) prefetch() {
 
 		if fetchErr != nil {
 			if p.ctx.Err() == nil {
-				p.log.Error("block download failed", zap.Error(fetchErr))
+				p.log.Error("block fetch failed", zap.Error(fetchErr))
 			}
 			return
 		}
 
 		for _, block := range blocks {
 			if block == nil {
-				p.log.Error("unexpected nil block, aborting prefetch")
+				p.log.Error("unexpected nil block, aborting")
 				return
 			}
 			select {
