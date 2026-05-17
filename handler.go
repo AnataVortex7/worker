@@ -174,7 +174,7 @@ func downloadPhoto(c *gin.Context, botWorker *botworker.Worker, file *tgutil.Fil
 				return buf.Bytes(), nil
 			}
 
-		case *tg.UploadFileCdnRedirect:
+		case *tg.UploadFileCDNRedirect:
 			// CDN redirect — download directly from CDN URL
 			return downloadFromCDN(r)
 
@@ -185,7 +185,7 @@ func downloadPhoto(c *gin.Context, botWorker *botworker.Worker, file *tgutil.Fil
 }
 
 // downloadFromCDN fetches photo data from Telegram CDN.
-func downloadFromCDN(redirect *tg.UploadFileCdnRedirect) ([]byte, error) {
+func downloadFromCDN(redirect *tg.UploadFileCDNRedirect) ([]byte, error) {
 	// CDN URL: https://<dc_id>.cdn.telegram.org/file/<file_token>
 	url := fmt.Sprintf("https://cdn%d.telegram.org/file/%s",
 		redirect.DCID,
