@@ -83,6 +83,7 @@ func register(workerURL string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("X-Worker-Secret", config.C.StreamSecret)  // ← हे add कर
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
