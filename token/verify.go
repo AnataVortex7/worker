@@ -48,6 +48,12 @@ type WorkerTokenPayload struct {
 	MimeType      string `json:"fmime"`
 	DCID          int    `json:"dc"`
 
+	// Stream identity key — main server प्रत्येक stream साठी unique key generate करतो.
+	// Worker दर 5s ला /api/worker/stream-check ला हा key पाठवतो.
+	// User ने नवीन stream सुरू केला की main server नवीन key store करतो —
+	// जुना key invalid होतो → worker stream बंद करतो.
+	StreamKey string `json:"sk"`
+
 	// Expiry
 	ExpiresAt time.Time `json:"exp"`
 }
@@ -71,6 +77,9 @@ type VerifyResult struct {
 	FileName      string
 	MimeType      string
 	DCID          int
+
+	// Unique key for this stream session — used for heartbeat validation
+	StreamKey string
 }
 
 // Verify decrypts and validates a worker token.
@@ -134,6 +143,7 @@ func Verify(tokenStr string) (*VerifyResult, error) {
 		FileName:      payload.FileName,
 		MimeType:      payload.MimeType,
 		DCID:          payload.DCID,
+		StreamKey:     payload.StreamKey,
 	}, nil
 }
 
