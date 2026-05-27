@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"github.com/gotd/td/tg"
 	range_parser "github.com/quantumsheep/range-parser"
 	"github.com/apm1432/worker/botpool"
+	"github.com/apm1432/worker/config"
 	"github.com/apm1432/worker/stream"
 	workertoken "github.com/apm1432/worker/token"
 	"go.uber.org/zap"
@@ -33,6 +36,92 @@ func handlePing(c *gin.Context) {
 		"time":        time.Now().UTC().Format(time.RFC3339),
 		"cached_bots": botpool.Count(),
 	})
+}
+
+// startStreamHeartbeat launches a goroutine that polls main server every 5s.
+// जर 2 consecutive checks fail झाले (key mismatch किंवा network error) तर
+// cancel() call होतो → stream pipe बंद होतो → Telegram connection सुटतो.
+//
+// Parameters:
+//   - ctx        : stream चा context (cancel झाला की goroutine थांबतो)
+//   - cancel     : stream cancel करायचा function
+//   - userID     : user चा hex ID (main server ला query करायला)
+//   - streamKey  : या stream साठी issue केलेली unique key
+func startStreamHeartbeat(ctx context.Context, cancel context.CancelFunc, userID, streamKey string) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		failCount := 0
+		client := &http.Client{Timeout: 4 * time.Second}
+		checkURL := config.C.MainServerURL + "/api/worker/stream-check"
+
+		for {
+			select {
+			case <-ctx.Done():
+				// Stream already cancelled/finished — goroutine बंद करा
+				return
+
+			case <-ticker.C:
+				active, err := checkStreamActive(client, checkURL, userID, streamKey)
+				if err != nil || !active {
+					failCount++
+					log.Warn("stream heartbeat check failed",
+						zap.String("user_id", userID),
+						zap.Bool("active", active),
+						zap.Int("fail_count", failCount),
+						zap.Error(err),
+					)
+					if failCount >= 2 {
+						log.Info("killing stream — 2 consecutive heartbeat failures",
+							zap.String("user_id", userID),
+						)
+						cancel()
+						return
+					}
+				} else {
+					// Successful check — reset counter
+					failCount = 0
+				}
+			}
+		}
+	}()
+}
+
+// checkStreamActive calls main server's /api/worker/stream-check endpoint.
+// Returns (true, nil) if stream is still the latest active one for the user.
+// Returns (false, nil) if main server responded but stream is no longer active.
+// Returns (false, err) on network/parse error.
+func checkStreamActive(client *http.Client, checkURL, userID, streamKey string) (bool, error) {
+	req, err := http.NewRequest(http.MethodGet, checkURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+
+	q := req.URL.Query()
+	q.Set("uid", userID)
+	q.Set("key", streamKey)
+	req.URL.RawQuery = q.Encode()
+	req.Header.Set("X-Worker-Secret", config.C.StreamSecret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Active bool `json:"active"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false, fmt.Errorf("decode: %w", err)
+	}
+
+	return body.Active, nil
 }
 
 // GET /worker-stream/:workerToken
@@ -60,7 +149,19 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 3. Bot client — token मधील credentials वापरून (pool मधून cached/new)
+	// 3. Cancellable context — heartbeat goroutine याच ctx ला cancel करतो
+	// जेणेकरून user ने नवीन stream सुरू केल्यावर हा stream instant बंद होईल.
+	streamCtx, streamCancel := context.WithCancel(r.Context())
+	defer streamCancel()
+
+	// 4. Heartbeat goroutine — दर 5s ला main server ला check करतो.
+	// StreamKey valid नसेल (user ने नवीन stream सुरू केला) तर
+	// 2 consecutive failures नंतर streamCancel() call होतो.
+	if verified.StreamKey != "" && config.C.MainServerURL != "" {
+		startStreamHeartbeat(streamCtx, streamCancel, verified.UserID, verified.StreamKey)
+	}
+
+	// 5. Bot client — token मधील credentials वापरून (pool मधून cached/new)
 	botClient, err := botpool.Get(verified.ApiID, verified.ApiHash, verified.BotToken)
 	if err != nil {
 		log.Error("bot client unavailable", zap.Error(err))
@@ -71,10 +172,10 @@ func handleWorkerStream(c *gin.Context) {
 	log.Sugar().Debugf("worker-stream: msg=%d chan=%d bot=@%s",
 		verified.MessageID, verified.ChannelID, botClient.Self.Username)
 
-	// 4. File location — token मधूनच build करतो (Telegram query नाही!)
+	// 6. File location — token मधूनच build करतो (Telegram query नाही!)
 	location, isPhoto := buildLocation(verified)
 
-	// 5. Photo (FileSize == 0)
+	// 7. Photo (FileSize == 0)
 	if isPhoto {
 		data, err := downloadPhoto(c, botClient.API(), location)
 		if err != nil {
@@ -91,7 +192,7 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 6. Range-aware streaming
+	// 8. Range-aware streaming
 	c.Header("Accept-Ranges", "bytes")
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
@@ -128,8 +229,8 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 7. Pipe: Telegram → Browser
-	pipe, err := stream.NewStreamPipe(c, botClient, location, start, end, log)
+	// 9. Pipe: Telegram → Browser — streamCtx वापरतो (heartbeat cancel करू शकतो)
+	pipe, err := stream.NewStreamPipe(streamCtx, botClient, location, start, end, log)
 	if err != nil {
 		log.Error("stream pipe create failed", zap.Error(err))
 		return
