@@ -150,12 +150,38 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 2b. Dead stream check — heartbeat ne invalid mark kela ka?
-	// Navya video sathi switch kela ki junya stream cha key deadStreamKeys madhe jaato.
-	// Seek request (nava connection) ithe turant block hoto — main server la jaava laagat nahi.
+	// 2b. Sec-Fetch strict check — curl/wget/IDM/aria2/yt-dlp pathavat nahi he headers.
+	// Browser always pathavto: Sec-Fetch-Dest: video/audio/empty
+	// Tool ne copy kela tari Sec-Fetch-Dest chukicha asel tar reject.
+	secFetchDest := r.Header.Get("Sec-Fetch-Dest")
+	if secFetchDest != "" {
+		allowed := map[string]bool{"video": true, "audio": true, "empty": true, "": true}
+		if !allowed[secFetchDest] {
+			http.Error(w, "Invalid request origin.", http.StatusForbidden)
+			return
+		}
+	}
+
+	// 2c. Dead stream check — heartbeat ne invalid mark kela ka?
 	if _, isDead := deadStreamKeys.Load(verified.StreamKey); isDead {
 		http.Error(w, "Stream session replaced. Please reload the player.", http.StatusGone)
 		return
+	}
+
+	// 2d. IP binding — token madhe embedded IP validate karo.
+	// URL copy karun different machine varun download → turant reject.
+	// Token madhe IP nahi (older tokens) tar skip karo.
+	if verified.ClientIP != "" {
+		requestIP := c.ClientIP()
+		if requestIP != verified.ClientIP {
+			log.Warn("IP mismatch — possible token sharing attempt",
+				zap.String("token_ip", verified.ClientIP),
+				zap.String("request_ip", requestIP),
+				zap.String("user_id", verified.UserID),
+			)
+			http.Error(w, "Stream access denied: IP mismatch.", http.StatusForbidden)
+			return
+		}
 	}
 
 	// 3. Cancellable context — heartbeat goroutine याच ctx ला cancel करतो
