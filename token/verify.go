@@ -54,6 +54,10 @@ type WorkerTokenPayload struct {
 	// जुना key invalid होतो → worker stream बंद करतो.
 	StreamKey string `json:"sk"`
 
+	// ClientIP — token generate kelya velcha user IP.
+	// Worker validate karto: request IP == token IP.
+	ClientIP string `json:"cip"`
+
 	// Expiry
 	ExpiresAt time.Time `json:"exp"`
 }
@@ -80,6 +84,9 @@ type VerifyResult struct {
 
 	// Unique key for this stream session — used for heartbeat validation
 	StreamKey string
+
+	// ClientIP — token madhe embedded IP, handler validate karto
+	ClientIP string
 }
 
 // Verify decrypts and validates a worker token.
@@ -144,6 +151,7 @@ func Verify(tokenStr string) (*VerifyResult, error) {
 		MimeType:      payload.MimeType,
 		DCID:          payload.DCID,
 		StreamKey:     payload.StreamKey,
+		ClientIP:      payload.ClientIP,
 	}, nil
 }
 
