@@ -150,14 +150,24 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 2b. Sec-Fetch strict check — curl/wget/IDM/aria2/yt-dlp pathavat nahi he headers.
-	// Browser always pathavto: Sec-Fetch-Dest: video/audio/empty
-	// Tool ne copy kela tari Sec-Fetch-Dest chukicha asel tar reject.
+	// 2b. Range header mandatory — browser player always sends Range.
+	// curl/wget/IDM without Range = full-file single-request download → block.
+	// HEAD requests (metadata probe) are allowed without Range.
+	if r.Header.Get("Range") == "" && r.Method != http.MethodHead {
+		http.Error(w, "Range header required for streaming.", http.StatusBadRequest)
+		return
+	}
+
+	// 2c. Sec-Fetch-Dest check — browser always sends this header for media requests.
+	// curl/wget/IDM/aria2 do NOT send Sec-Fetch-Dest at all (empty string).
+	// We block empty Sec-Fetch-Dest (download tools) but allow HEAD (no Sec-Fetch).
+	// Allowed values: "video", "audio", "empty" (fetch API), "image"
 	secFetchDest := r.Header.Get("Sec-Fetch-Dest")
-	if secFetchDest != "" {
-		allowed := map[string]bool{"video": true, "audio": true, "empty": true, "": true}
-		if !allowed[secFetchDest] {
-			http.Error(w, "Invalid request origin.", http.StatusForbidden)
+	if r.Method != http.MethodHead {
+		allowedDest := map[string]bool{"video": true, "audio": true, "empty": true, "image": true}
+		if !allowedDest[secFetchDest] {
+			// secFetchDest is "" (curl/wget) or "document" or other unknown value
+			http.Error(w, "Direct stream access is not allowed.", http.StatusForbidden)
 			return
 		}
 	}
@@ -227,15 +237,15 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 8. Range-aware streaming
+	// 8. Range-aware streaming — Range header already validated above (mandatory).
 	c.Header("Accept-Ranges", "bytes")
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
 
 	if rangeHeader == "" {
-		start = 0
-		end = verified.FileSize - 1
-		w.WriteHeader(http.StatusOK)
+		// Should not reach here (blocked above), but guard anyway.
+		http.Error(w, "Range header required for streaming.", http.StatusBadRequest)
+		return
 	} else {
 		ranges, err := range_parser.Parse(verified.FileSize, rangeHeader)
 		if err != nil {
