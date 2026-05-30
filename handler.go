@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,11 @@ import (
 )
 
 var log *zap.Logger
+
+// deadStreamKeys — heartbeat ne invalid detect kela ki streamKey ithe store hoto.
+// handleWorkerStream pratyek nava connection la ithe check karto — turant reject.
+// 10 minute nantar auto-cleanup.
+var deadStreamKeys sync.Map // streamKey (string) → struct{}
 
 func setupRoutes(r *gin.Engine, l *zap.Logger) {
 	log = l.Named("handler")
@@ -49,39 +55,34 @@ func handlePing(c *gin.Context) {
 //   - streamKey  : या stream साठी issue केलेली unique key
 func startStreamHeartbeat(ctx context.Context, cancel context.CancelFunc, userID, streamKey string) {
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(2 * time.Second) // 5s → 2s: faster detection
 		defer ticker.Stop()
 
-		failCount := 0
 		client := &http.Client{Timeout: 4 * time.Second}
 		checkURL := config.C.MainServerURL + "/api/worker/stream-check"
 
 		for {
 			select {
 			case <-ctx.Done():
-				// Stream already cancelled/finished — goroutine बंद करा
 				return
 
 			case <-ticker.C:
 				active, err := checkStreamActive(client, checkURL, userID, streamKey)
 				if err != nil || !active {
-					failCount++
-					log.Warn("stream heartbeat check failed",
+					// 1 failure = turant kill (network blip nahi, streamKey invalid ahe)
+					log.Info("killing stream — heartbeat inactive",
 						zap.String("user_id", userID),
 						zap.Bool("active", active),
-						zap.Int("fail_count", failCount),
 						zap.Error(err),
 					)
-					if failCount >= 2 {
-						log.Info("killing stream — 2 consecutive heartbeat failures",
-							zap.String("user_id", userID),
-						)
-						cancel()
-						return
-					}
-				} else {
-					// Successful check — reset counter
-					failCount = 0
+					// deadStreamKeys madhe mark karo — future seeks turant block hotat
+					deadStreamKeys.Store(streamKey, struct{}{})
+					go func(sk string) {
+						time.Sleep(10 * time.Minute)
+						deadStreamKeys.Delete(sk)
+					}(streamKey)
+					cancel()
+					return
 				}
 			}
 		}
@@ -146,6 +147,14 @@ func handleWorkerStream(c *gin.Context) {
 	// 2. Direct browser navigation block
 	if r.Header.Get("Sec-Fetch-Dest") == "document" {
 		http.Error(w, "Direct stream access is not allowed.", http.StatusForbidden)
+		return
+	}
+
+	// 2b. Dead stream check — heartbeat ne invalid mark kela ka?
+	// Navya video sathi switch kela ki junya stream cha key deadStreamKeys madhe jaato.
+	// Seek request (nava connection) ithe turant block hoto — main server la jaava laagat nahi.
+	if _, isDead := deadStreamKeys.Load(verified.StreamKey); isDead {
+		http.Error(w, "Stream session replaced. Please reload the player.", http.StatusGone)
 		return
 	}
 
