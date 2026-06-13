@@ -31,8 +31,14 @@ var deadStreamKeys sync.Map // streamKey (string) → struct{}
 
 func setupRoutes(r *gin.Engine, l *zap.Logger) {
 	log = l.Named("handler")
+	r.GET("/", handleRoot)
 	r.GET("/ping", handlePing)
 	r.GET("/worker-stream/:workerToken", handleWorkerStream)
+}
+
+// GET / — browser ne worker URL directly open kela tar main server la redirect
+func handleRoot(c *gin.Context) {
+	http.Redirect(c.Writer, c.Request, config.C.MainServerURL, http.StatusFound)
 }
 
 // GET /ping — main server health check करतो हे endpoint
