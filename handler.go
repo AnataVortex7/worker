@@ -185,22 +185,6 @@ func handleWorkerStream(c *gin.Context) {
 		return
 	}
 
-	// 2d. IP binding — token madhe embedded IP validate karo.
-	// URL copy karun different machine varun download → turant reject.
-	// Token madhe IP nahi (older tokens) tar skip karo.
-	if verified.ClientIP != "" {
-		requestIP := normalizeIP(c.ClientIP())
-		tokenIP := normalizeIP(verified.ClientIP)
-		if requestIP != tokenIP {
-			log.Warn("IP mismatch — possible token sharing attempt",
-				zap.String("token_ip", tokenIP),
-				zap.String("request_ip", requestIP),
-				zap.String("user_id", verified.UserID),
-			)
-			http.Error(w, "Stream access denied: IP mismatch.", http.StatusForbidden)
-			return
-		}
-	}
 
 	// 3. Cancellable context — heartbeat goroutine याच ctx ला cancel करतो
 	// जेणेकरून user ने नवीन stream सुरू केल्यावर हा stream instant बंद होईल.
