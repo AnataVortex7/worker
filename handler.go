@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -182,10 +183,11 @@ func handleWorkerStream(c *gin.Context) {
 	// URL copy karun different machine varun download → turant reject.
 	// Token madhe IP nahi (older tokens) tar skip karo.
 	if verified.ClientIP != "" {
-		requestIP := c.ClientIP()
-		if requestIP != verified.ClientIP {
+		requestIP := normalizeIP(c.ClientIP())
+		tokenIP := normalizeIP(verified.ClientIP)
+		if requestIP != tokenIP {
 			log.Warn("IP mismatch — possible token sharing attempt",
-				zap.String("token_ip", verified.ClientIP),
+				zap.String("token_ip", tokenIP),
 				zap.String("request_ip", requestIP),
 				zap.String("user_id", verified.UserID),
 			)
@@ -367,6 +369,20 @@ func setAntiDownloadHeaders(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate")
 	c.Header("Pragma", "no-cache")
 	c.Header("X-Content-Type-Options", "nosniff")
+}
+
+// normalizeIP — IPv4-mapped IPv6 normalize करतो.
+// "::ffff:49.36.46.209" → "49.36.46.209"
+// Token generate वेळी IPv6 होता, request IPv4 — same user, same device.
+func normalizeIP(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ip
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		return v4.String()
+	}
+	return parsed.String()
 }
 
 func isClientDisconnect(err error) bool {
