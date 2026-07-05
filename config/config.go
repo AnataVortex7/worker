@@ -22,9 +22,9 @@ type Config struct {
 	MainServerURL string `envconfig:"MAIN_SERVER_URL" required:"true"`
 
 	// Stream tuning (optional — sensible defaults)
-	StreamConcurrency int `envconfig:"STREAM_CONCURRENCY" default:"4"`
-	StreamBufferCount int `envconfig:"STREAM_BUFFER_COUNT" default:"8"`
-	StreamTimeoutSec  int `envconfig:"STREAM_TIMEOUT_SEC"  default:"30"`
+	StreamConcurrency int `envconfig:"STREAM_CONCURRENCY" default:"5"`
+	StreamBufferCount int `envconfig:"STREAM_BUFFER_COUNT" default:"25"`
+	StreamTimeoutSec  int `envconfig:"STREAM_TIMEOUT_SEC"  default:"20"`
 	StreamMaxRetries  int `envconfig:"STREAM_MAX_RETRIES"  default:"3"`
 }
 
@@ -40,13 +40,13 @@ func Load() {
 
 func validate() {
 	if C.StreamConcurrency <= 0 {
-		C.StreamConcurrency = 4
+		C.StreamConcurrency = 5
 	}
 	if C.StreamBufferCount <= 0 {
-		C.StreamBufferCount = 8
+		C.StreamBufferCount = 25
 	}
 	if C.StreamTimeoutSec <= 0 {
-		C.StreamTimeoutSec = 30
+		C.StreamTimeoutSec = 20
 	}
 	if C.StreamMaxRetries <= 0 {
 		C.StreamMaxRetries = 3
